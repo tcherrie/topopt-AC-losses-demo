@@ -35,6 +35,7 @@ __status__ = "Development"
 #%% Import
 
 import ngsolve as ngs
+from ngsolve.solvers import SuperLU
 
 #%% Helpers
 
@@ -166,7 +167,7 @@ def solve_magnetoharmonic(
     supply: dict,       # supply of electrical conductors
     conductivity: ngs.GridFunction | ngs.CoefficientFunction | float = 6e7,  # conductivity
     Kinv=None,  # optional precomputed inverse system matrix
-    solver: str = "pardiso",  # linear solver type
+    solver: str = "superlu",  # linear solver type
     bonus_intorder : int = 3,       # bonus intorder for conductivity and magnetizationterms
     verbose: int = 0,  # for controlling print statements
     taskmanager: bool = True, # for paralelizing assembly process
@@ -295,7 +296,10 @@ def solve_magnetoharmonic(
         if verbose >= 1:
             print(f"Matrix decomposition with {solver}... ", end="")
 
-        Kinv = K.Inverse(fes.FreeDofs(), inverse=solver)
+        if solver.lower() != "superlu":
+            Kinv = K.Inverse(fes.FreeDofs(), inverse=solver)
+        else:
+            Kinv = SuperLU(K, freedofs=fes.FreeDofs())
 
         if verbose >= 1:
             print("Done!")
