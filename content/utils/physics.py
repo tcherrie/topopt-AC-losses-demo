@@ -298,6 +298,7 @@ def solve_magnetoharmonic(
 
         if solver.lower() != "superlu":
             Kinv = K.Inverse(fes.FreeDofs(), inverse=solver)
+            
         else:
             Kinv = SuperLU(K, freedofs=fes.FreeDofs())
 
