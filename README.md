@@ -1,12 +1,12 @@
 # JupyterLite Demo
 
-[![lite-badge](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://tcherrie.github.io/topopt-ac-losses-demo/lab/?path=0_index.ipynb)
+[![lite-badge](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://tcherrie.github.io/topopt-AC-losses-demo/lab/?path=0_index.ipynb)
 
 JupyterLite deployed as a static site to GitHub Pages, for demo purposes.
 
 ## ✨ Try it in your browser ✨
 
-➡️ **https://tcherrie.github.io/topopt-ac-losses-demo/lab/?path=0_index.ipynb**
+➡️ **https://tcherrie.github.io/topopt-AC-losses-demo/lab/?path=0_index.ipynb**
 
 ## Setting up your own NGSolve - jupyterlite demos:
 
