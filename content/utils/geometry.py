@@ -5,8 +5,10 @@ Provide utilities to generate the machine geometry and mesh.
 Functions defined here:
 - plot_points               (debug)
 - plot_lines                (debug)
+- mask                      (helper for vizualization)
 - find_tangent_intersection (helper)
 - machine_mesh              (main function)
+- slot_mesh                 (main function)
 
 A Large Language Model (GPT-5.5 from Open AI, free version) was used to help with the code and generate
 the docstrings of the functions. The authors have written the initial code, carefully checked and post-edited
@@ -21,7 +23,7 @@ __copyright__ = "Copyright 2026, CentraleSupélec, SAFRAN"
 __credits__ = ["Théodore Cherrière", "Alexis Pons", "Guillaume Krebs",
                     "Adrien Mercier", "Loucif Benmamas", "Sulivan Küttler"]
 __license__ = "GNU LGPL"
-__version__ = "0.1"
+__version__ = "0.2"
 __maintainer__ = "Théodore Cherrière"
 __email__ = "theodore.cherriere@centralesupelec.fr"
 __status__ = "Development"
@@ -190,6 +192,52 @@ def plot_lines(pnts: list,
 
 #%% Helper
 
+def mask(
+    space_or_mesh: ngs.FESpace | ngs.comp.Mesh,
+    region: str = ".*",
+    ) -> ngs.GridFunction | ngs.CoefficientFunction:
+    """
+    Create a mask identifying active regions of a mesh or finite element space.
+
+    If a mesh is provided, the mask is equal to 1 in materials matching
+    ``region`` and ``NaN`` elsewhere. If a finite element space is provided,
+    the mask is equal to 1 where the space has degrees of freedom and ``NaN``
+    elsewhere. The resulting mask is convenient for visualizing domains while
+    hiding inactive regions.
+
+    Parameters
+    ----------
+    space_or_mesh : ngs.FESpace or ngs.comp.Mesh
+        Finite element space or mesh from which to build the mask.
+
+    region : str, optional
+        Regular expression selecting material regions when a mesh is provided.
+        Ignored if a finite element space is given. Default is ``".*"``.
+
+    Returns
+    -------
+    ngs.GridFunction or ngs.CoefficientFunction
+        Mask equal to 1 in active regions and ``NaN`` elsewhere.
+    """
+    if type(space_or_mesh) is ngs.comp.Mesh:
+        # Material-based mask on the mesh
+        gfu = space_or_mesh.MaterialCF({region: 1}, default=np.nan)
+    else:
+        # Identify the support of the finite element space
+        gfu_ref = ngs.GridFunction(space_or_mesh)
+        gfu_ref.Set(
+            ngs.CF(tuple([1 / ngs.sqrt(gfu_ref.dim) for i in range(gfu_ref.dim)]))
+        )
+
+        # Compute the norm to obtain a scalar mask
+        gfu = ngs.GridFunction(ngs.L2(space_or_mesh.mesh))
+        gfu.Set(ngs.Norm(gfu_ref))
+
+        # Replace inactive regions by NaN for cleaner visualization
+        gfu.vec.data.FV().NumPy()[gfu.vec.FV().NumPy() == 0] = np.nan
+
+    return gfu
+
 def find_tangent_intersection(p1:       tuple[float, float],
                               p2:       tuple[float, float],
                               center:   tuple[float, float] = (0., 0.)):
@@ -261,23 +309,27 @@ def machine_mesh(# Primitives
                 e : float = 0.5e-3,         # airgap thickness [m]
                 # Relative geometric parameters in (0, 1)
                 kRe : float = 0.3,          # relative airgap radius
-                kA : float = 0.5,           # stator flux path thickness
+                kA  : float = 0.5,          # stator flux path thickness
                 kShoe : float = 0.05,       # relative stator shoe thickness
                 kRint_air : float = 0.8,    # relative internal air radius
                 kRext_air : float = 1.1,    # relative external air radius (>1)
                 # Bundles parameters
                 bundles_per_half_slot : int = 1, # number of bundles per half slot
-                kBundleR : float = 0.9,     # relative radial extension of conductor
-                kBundleTh : float = 0.9,    # relative orthoradial extension of conductor
-                # Elements sizes
+                kBundleR    : float = 0.9,   # relative radial extension of conductor
+                kBundleTh   : float = 0.9,   # relative orthoradial extension of conductor
+                # Mesh size
                 hAirOut : float = 10e-3,    # outside the machine [m]
-                hRotor : float = 3e-3,      # within the rotor [m]
-                hSlot :  float = 2e-3,      # within the stator slots [m]
+                hRotor  : float = 3e-3,     # within the rotor [m]
+                hSlot   : float = 2e-3,     # within the stator slots [m]
                 hBundle : float = 2e-3,     # within the conductor bundles [m]
-                hShoe : float = 2e-3,      # within the slots shoes [m]
+                hShoe   : float = 2e-3,     # within the slots shoes [m]
                 hAirgap : float = 0.5e-3,   # within the air gap [m]
                 hStator : float = 3e-3,     # within the stator core [m]
-                hCorner : float = 0.5e-3,   # at the interior stator corners (singularity) [m]
+                hCorner : float = 0.5e-3,   # at the corner singularities [m]
+                hCorner_stator : float = None, # at the interior stator corners (singularity) [m]
+                hCorner_shoes : float = None,  # at the shoes corners (singularity) [m]
+                hCorner_airgap : float = None,  # at the airgap/stator corners (singularity) [m]
+                mesh_size_factor : float = 1,  # global factor to scale all mesh sizes
                 # Domain names
                 airInner_label : str = "air_inner",
                 airOuter_label : str = "air_outer",
@@ -316,6 +368,28 @@ def machine_mesh(# Primitives
                 minion5_bnd_label :  str = "minion5",
                 minion6_bnd_label :  str = "minion6",
                 minion7_bnd_label :  str = "minion7",
+                # Boundary labels for the slot model
+                slot11_shoe_bnd_label   :  str = "slot11_shoe",
+                slot12_shoe_bnd_label   :  str = "slot12_shoe",
+                slot11_lateral_bnd_label:  str = "slot11_lateral",
+                slot12_lateral_bnd_label:  str = "slot12_lateral",
+                slot11_bottom_bnd_label :  str = "slot11_bottom",
+                slot12_bottom_bnd_label :  str = "slot12_bottom",
+                slot1_half_bnd_label    :  str = "slot1_half",
+                slot21_shoe_bnd_label   :  str = "slot21_shoe",
+                slot22_shoe_bnd_label   :  str = "slot22_shoe",
+                slot21_lateral_bnd_label:  str = "slot21_lateral",
+                slot22_lateral_bnd_label:  str = "slot22_lateral",
+                slot21_bottom_bnd_label :  str = "slot21_bottom",
+                slot22_bottom_bnd_label :  str = "slot22_bottom",
+                slot2_half_bnd_label    :  str = "slot2_half",
+                slot31_shoe_bnd_label   :  str = "slot31_shoe",
+                slot32_shoe_bnd_label   :  str = "slot32_shoe",
+                slot31_lateral_bnd_label:  str = "slot31_lateral",
+                slot32_lateral_bnd_label:  str = "slot32_lateral",
+                slot31_bottom_bnd_label :  str = "slot31_bottom",
+                slot32_bottom_bnd_label :  str = "slot32_bottom",
+                slot3_half_bnd_label    :  str = "slot3_half",
                 # Debug
                 debug : bool = False
                 ):
@@ -370,7 +444,7 @@ def machine_mesh(# Primitives
 
     kBundleTh : float, optional
         Tangential filling factor of conductor bundles inside the slots.
-
+        
     hAirOut : float, optional
         Target mesh size in the outer air region [m].
 
@@ -393,7 +467,19 @@ def machine_mesh(# Primitives
         Target mesh size in the stator core [m].
 
     hCorner : float, optional
-        Local mesh refinement size near stator corner singularities [m].
+        Local mesh refinement size near corner singularities [m].
+        
+    hCorner_shoes : float, optional
+        Local mesh refinement size near shoes corner singularities [m].
+        
+    hCorner_airgap : float, optional
+        Local mesh refinement size near airgap/stator corners (singularity) [m].
+    
+    hCorner_stator : float, optional
+        Local mesh refinement size near interior stator corners (singularity) [m].    
+    
+    mesh_size_factor : float, optional
+        Global scaling factor applied to all mesh size parameters.
 
     airInner_label, airOuter_label, rotor_label, airgapRotor_label, \
     airgapStator_label, coreStator_label : str, optional
@@ -419,6 +505,18 @@ def machine_mesh(# Primitives
 
     masterX_bnd_label, minionX_bnd_label : str, optional
         Labels used for periodic boundary condition pairing.
+        
+    slotXX_shoe_bnd_label: str, optional
+        Boundary labels for the shoe boundaries of each stator slot.
+        
+    slotXX_lateral_bnd_label: str, optional
+        Boundary labels for the lateral boundaries of each stator slot.
+        
+    slotXX_bottom_bnd_label: str, optional
+        Boundary labels for the bottom boundaries of each stator slot.
+    
+    slotX_half_bnd_label: str, optional
+        Boundary labels for the half-slot boundaries used in slot subdomain meshing.
 
     debug : bool, optional
         If ``True``, display intermediate geometry and point visualizations.
@@ -460,7 +558,25 @@ def machine_mesh(# Primitives
     ...     debug=True
     ... )
     """
-
+    
+    ##################################################################################
+    # Apply default mesh size behavior
+    hCorner_stator = hCorner if hCorner_stator is None else hCorner_stator
+    hCorner_shoes = hCorner if hCorner_shoes is None else hCorner_shoes
+    hCorner_airgap = hCorner if hCorner_airgap is None else hCorner_airgap
+    hAirgap *= mesh_size_factor
+    hAirOut *= mesh_size_factor
+    hRotor *= mesh_size_factor
+    hSlot *= mesh_size_factor
+    hBundle *= mesh_size_factor
+    hShoe *= mesh_size_factor
+    hStator *= mesh_size_factor
+    hCorner_stator *= mesh_size_factor
+    hCorner_shoes *= mesh_size_factor
+    hCorner_airgap *= mesh_size_factor
+    
+    ##################################################################################
+    #  Defines labels if 1 bundle per half slot
     if bundles_per_half_slot == 1:
         slot11_label = slot11_label + "_" + bundle_label + "0"
         slot12_label = slot12_label + "_" + bundle_label + "0"
@@ -529,15 +645,15 @@ def machine_mesh(# Primitives
     pnts +=  pntsairgap1
 
     pnts2 =[[(Rint_stator,0), {}],
-            [(Rint_stator*np.cos(thTooth/2), a/2 ), {}],
+            [(Rint_stator*np.cos(thTooth/2), a/2 ), {"maxh": hCorner_airgap}],
             [(Rint_stator*np.cos(thHalfSlot), Rint_stator*np.sin(thHalfSlot) ), {}],
-            [(Rint_stator*np.cos(thPole/3 - thTooth/2), Rint_stator*np.sin(thPole/3 - thTooth/2) ), {}],
-            [(Rint_stator*np.cos(thPole/3 + thTooth/2), Rint_stator*np.sin(thPole/3 + thTooth/2) ), {}],
+            [(Rint_stator*np.cos(thPole/3 - thTooth/2), Rint_stator*np.sin(thPole/3 - thTooth/2) ), {"maxh": hCorner_airgap}],
+            [(Rint_stator*np.cos(thPole/3 + thTooth/2), Rint_stator*np.sin(thPole/3 + thTooth/2) ), {"maxh": hCorner_airgap}],
             [(Rint_stator*np.cos(thHalfSlot+thPole/3), Rint_stator*np.sin(thHalfSlot+thPole/3) ), {}],
-            [(Rint_stator*np.cos(2*thPole/3 - thTooth/2), Rint_stator*np.sin(2*thPole/3 - thTooth/2) ), {}],
-            [(Rint_stator*np.cos(2*thPole/3 + thTooth/2), Rint_stator*np.sin(2*thPole/3 + thTooth/2) ), {}],
+            [(Rint_stator*np.cos(2*thPole/3 - thTooth/2), Rint_stator*np.sin(2*thPole/3 - thTooth/2) ), {"maxh": hCorner_airgap}],
+            [(Rint_stator*np.cos(2*thPole/3 + thTooth/2), Rint_stator*np.sin(2*thPole/3 + thTooth/2) ), {"maxh": hCorner_airgap}],
             [(Rint_stator*np.cos(thPole - thHalfSlot), Rint_stator*np.sin(thPole - thHalfSlot) ), {}],
-            [(Rint_stator*np.cos(thPole - thTooth/2), Rint_stator*np.sin(thPole - thTooth/2) ), {}],
+            [(Rint_stator*np.cos(thPole - thTooth/2), Rint_stator*np.sin(thPole - thTooth/2) ), {"maxh": hCorner_airgap}],
             [(Rint_stator*np.cos(thPole), Rint_stator*np.sin(thPole) ), {}]
     ]
 
@@ -549,15 +665,15 @@ def machine_mesh(# Primitives
 
     dThetaY = np.asin(a/2/Ryoke)
     pnts3 =[[(Ryoke,0), {}],
-            [(Ryoke*np.cos(dThetaY), a/2), {"maxh": hCorner}],
+            [(Ryoke*np.cos(dThetaY), a/2), {"maxh": hCorner_stator}],
             [(Ryoke*np.cos(thHalfSlot), Ryoke*np.sin(thHalfSlot)), {}],
-            [(Ryoke*np.cos(thPole/3-dThetaY), Ryoke*np.sin(thPole/3-dThetaY)), {"maxh": hCorner}],
-            [(Ryoke*np.cos(thPole/3+dThetaY), Ryoke*np.sin(thPole/3+dThetaY)), {"maxh": hCorner}],
+            [(Ryoke*np.cos(thPole/3-dThetaY), Ryoke*np.sin(thPole/3-dThetaY)), {"maxh": hCorner_stator}],
+            [(Ryoke*np.cos(thPole/3+dThetaY), Ryoke*np.sin(thPole/3+dThetaY)), {"maxh": hCorner_stator}],
             [(Ryoke*np.cos(thPole/3+thHalfSlot), Ryoke*np.sin(thPole/3+thHalfSlot)), {}],
-            [(Ryoke*np.cos(2*thPole/3-dThetaY), Ryoke*np.sin(2*thPole/3-dThetaY)), {"maxh": hCorner}],
-            [(Ryoke*np.cos(2*thPole/3+dThetaY), Ryoke*np.sin(2*thPole/3+dThetaY)), {"maxh": hCorner}],
+            [(Ryoke*np.cos(2*thPole/3-dThetaY), Ryoke*np.sin(2*thPole/3-dThetaY)), {"maxh": hCorner_stator}],
+            [(Ryoke*np.cos(2*thPole/3+dThetaY), Ryoke*np.sin(2*thPole/3+dThetaY)), {"maxh": hCorner_stator}],
             [(Ryoke*np.cos(2*thPole/3+thHalfSlot), Ryoke*np.sin(2*thPole/3+thHalfSlot)), {}],
-            [(Ryoke*np.cos(thPole-dThetaY), Ryoke*np.sin(thPole-dThetaY)), {"maxh": hCorner}],
+            [(Ryoke*np.cos(thPole-dThetaY), Ryoke*np.sin(thPole-dThetaY)), {"maxh": hCorner_stator}],
             [(Ryoke*np.cos(thPole),Ryoke*np.sin(thPole)), {}],
     ]
 
@@ -582,15 +698,15 @@ def machine_mesh(# Primitives
 
     pnts += pnts4
     dThetaShoes = np.asin(a/2/Rshoe)
-    pntsShoes = [[(Rshoe*np.cos(dThetaShoes), a/2), {}],
+    pntsShoes = [[(Rshoe*np.cos(dThetaShoes), a/2), {"maxh": hCorner_shoes}],
                 [(Rshoe*np.cos(thHalfSlot), Rshoe*np.sin(thHalfSlot)), {}],
-                [(Rshoe*np.cos(thPole/3 - dThetaShoes), Rshoe * np.sin(thPole/3 - dThetaShoes)), {}],
-                [(Rshoe*np.cos(thPole/3 + dThetaShoes), Rshoe * np.sin(thPole/3 + dThetaShoes)), {}],
+                [(Rshoe*np.cos(thPole/3 - dThetaShoes), Rshoe * np.sin(thPole/3 - dThetaShoes)), {"maxh": hCorner_shoes}],
+                [(Rshoe*np.cos(thPole/3 + dThetaShoes), Rshoe * np.sin(thPole/3 + dThetaShoes)), {"maxh": hCorner_shoes}],
                 [(Rshoe*np.cos(thHalfSlot+thPole/3), Rshoe*np.sin(thHalfSlot+thPole/3)), {}],
-                [(Rshoe*np.cos(2*thPole/3 - dThetaShoes), Rshoe * np.sin(2*thPole/3 - dThetaShoes)), {}],
-                [(Rshoe*np.cos(2*thPole/3 + dThetaShoes), Rshoe * np.sin(2*thPole/3 + dThetaShoes)), {}],
+                [(Rshoe*np.cos(2*thPole/3 - dThetaShoes), Rshoe * np.sin(2*thPole/3 - dThetaShoes)), {"maxh": hCorner_shoes}],
+                [(Rshoe*np.cos(2*thPole/3 + dThetaShoes), Rshoe * np.sin(2*thPole/3 + dThetaShoes)), {"maxh": hCorner_shoes}],
                 [(Rshoe*np.cos(thHalfSlot+2*thPole/3), Rshoe*np.sin(thHalfSlot+2*thPole/3)), {}],
-                [(Rshoe*np.cos(thPole - dThetaShoes), Rshoe * np.sin(thPole - dThetaShoes)), {}],
+                [(Rshoe*np.cos(thPole - dThetaShoes), Rshoe * np.sin(thPole - dThetaShoes)), {"maxh": hCorner_shoes}],
     ]
 
     pnts += pntsShoes
@@ -654,30 +770,30 @@ def machine_mesh(# Primitives
                 [["line",19,62], {"leftdomain": domainShoe31, "rightdomain": domainCoreStator, "maxh": hShoe}],
                 [["line",20,63], {"leftdomain": domainShoe32, "rightdomain": domainShoe31, "maxh": hShoe}],
                 [["line",21,64], {"leftdomain": domainCoreStator, "rightdomain": domainShoe32, "maxh": hShoe}],
-                [["spline3",56,65,57], {"leftdomain": domainShoe11, "rightdomain": domainSlot11, "maxh": hSlot, "bc" : "testDirichlet"}],
-                [["spline3",57,66,58], {"leftdomain": domainShoe12, "rightdomain": domainSlot12, "maxh": hSlot}],
-                [["spline3",59,67,60], {"leftdomain": domainShoe21, "rightdomain": domainSlot21, "maxh": hSlot}],
-                [["spline3",60,68,61], {"leftdomain": domainShoe22, "rightdomain": domainSlot22, "maxh": hSlot}],
-                [["spline3",62,69,63], {"leftdomain": domainShoe31, "rightdomain": domainSlot31, "maxh": hSlot}],
-                [["spline3",63,70,64], {"leftdomain": domainShoe32, "rightdomain": domainSlot32, "maxh": hSlot}],
+                [["spline3",56,65,57], {"leftdomain": domainShoe11, "rightdomain": domainSlot11, "maxh": hSlot, "bc" : slot11_shoe_bnd_label}],
+                [["spline3",57,66,58], {"leftdomain": domainShoe12, "rightdomain": domainSlot12, "maxh": hSlot, "bc" : slot12_shoe_bnd_label}],
+                [["spline3",59,67,60], {"leftdomain": domainShoe21, "rightdomain": domainSlot21, "maxh": hSlot, "bc" : slot21_shoe_bnd_label}],
+                [["spline3",60,68,61], {"leftdomain": domainShoe22, "rightdomain": domainSlot22, "maxh": hSlot, "bc" : slot22_shoe_bnd_label}],
+                [["spline3",62,69,63], {"leftdomain": domainShoe31, "rightdomain": domainSlot31, "maxh": hSlot, "bc" : slot31_shoe_bnd_label}],
+                [["spline3",63,70,64], {"leftdomain": domainShoe32, "rightdomain": domainSlot32, "maxh": hSlot, "bc" : slot32_shoe_bnd_label}],
             ]
 
-    linesConductors = [[["line",56,34], {"leftdomain": domainSlot11, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["line",57,35], {"leftdomain": domainSlot12, "rightdomain": domainSlot11, "maxh": hStator}],
-                [["line",58,36], {"leftdomain": domainCoreStator, "rightdomain": domainSlot12, "maxh": hStator}],
-                [["line",59,37], {"leftdomain": domainSlot21, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["line",60,38], {"leftdomain": domainSlot22, "rightdomain": domainSlot21, "maxh": hStator}],
-                [["line",61,39], {"leftdomain": domainCoreStator, "rightdomain": domainSlot22, "maxh": hStator}],
-                [["line",62,40], {"leftdomain": domainSlot31, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["line",63,41], {"leftdomain": domainSlot32, "rightdomain": domainSlot31, "maxh": hStator}],
-                [["line",64,42], {"leftdomain": domainCoreStator, "rightdomain": domainSlot32, "maxh": hStator}]]
+    linesConductors = [[["line",56,34], {"leftdomain": domainSlot11, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot11_lateral_bnd_label}],
+                [["line",57,35], {"leftdomain": domainSlot12, "rightdomain": domainSlot11, "maxh": hStator, "bc" : slot1_half_bnd_label}],
+                [["line",58,36], {"leftdomain": domainCoreStator, "rightdomain": domainSlot12, "maxh": hStator, "bc" : slot12_lateral_bnd_label}],
+                [["line",59,37], {"leftdomain": domainSlot21, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot21_lateral_bnd_label}],
+                [["line",60,38], {"leftdomain": domainSlot22, "rightdomain": domainSlot21, "maxh": hStator, "bc" : slot2_half_bnd_label}],
+                [["line",61,39], {"leftdomain": domainCoreStator, "rightdomain": domainSlot22, "maxh": hStator, "bc" : slot22_lateral_bnd_label}],
+                [["line",62,40], {"leftdomain": domainSlot31, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot31_lateral_bnd_label}],
+                [["line",63,41], {"leftdomain": domainSlot32, "rightdomain": domainSlot31, "maxh": hStator, "bc" : slot3_half_bnd_label}],
+                [["line",64,42], {"leftdomain": domainCoreStator, "rightdomain": domainSlot32, "maxh": hStator, "bc" : slot32_lateral_bnd_label}]]
 
-    curvesConductors = [[["spline3",34,44,35], {"leftdomain": domainSlot11, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["spline3",35,45,36], {"leftdomain": domainSlot12, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["spline3",37,46,38], {"leftdomain": domainSlot21, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["spline3",38,47,39], {"leftdomain": domainSlot22, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["spline3",40,48,41], {"leftdomain": domainSlot31, "rightdomain": domainCoreStator, "maxh": hStator}],
-                [["spline3",41,49,42], {"leftdomain": domainSlot32, "rightdomain": domainCoreStator, "maxh": hStator}]]
+    curvesConductors = [[["spline3",34,44,35], {"leftdomain": domainSlot11, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot11_bottom_bnd_label}],
+                [["spline3",35,45,36], {"leftdomain": domainSlot12, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot12_bottom_bnd_label}],
+                [["spline3",37,46,38], {"leftdomain": domainSlot21, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot21_bottom_bnd_label}],
+                [["spline3",38,47,39], {"leftdomain": domainSlot22, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot22_bottom_bnd_label}],
+                [["spline3",40,48,41], {"leftdomain": domainSlot31, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot31_bottom_bnd_label}],
+                [["spline3",41,49,42], {"leftdomain": domainSlot32, "rightdomain": domainCoreStator, "maxh": hStator, "bc" : slot32_bottom_bnd_label}]]
 
     lines = periodic + arcs + curvesAGshoes + curvesShoes + linesConductors + curvesConductors
     
@@ -949,11 +1065,12 @@ def machine_mesh(# Primitives
     return ngs.Mesh(geo.GenerateMesh(maxh = max([hAirOut, hRotor, hBundle, hShoe, hAirgap, hStator, hCorner])))
 
 
+
 #%% Tests
 
 if __name__ == "__main__" : 
     print("Test for 3 pole pair (debug on)")
-    mesh = mesh_machine(p=3, debug=True).Curve(3)
+    mesh = machine_mesh(p=3, debug=True).Curve(3)
     
     from ngsolve import Integrate
     print("Compute areas of bundles")

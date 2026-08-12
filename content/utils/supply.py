@@ -20,7 +20,7 @@ __copyright__ = "Copyright 2026, CentraleSupélec, SAFRAN"
 __credits__ = ["Théodore Cherrière", "Alexis Pons", "Guillaume Krebs",
                     "Adrien Mercier", "Loucif Benmamas", "Sulivan Küttler"]
 __license__ = "GNU LGPL"
-__version__ = "0.1"
+__version__ = "0.2"
 __maintainer__ = "Théodore Cherrière"
 __email__ = "theodore.cherriere@centralesupelec.fr"
 __status__ = "Development"
@@ -28,6 +28,7 @@ __status__ = "Development"
 #%% Import
 
 import ngsolve as ngs
+import re
 
 #%% Current feeding
 
@@ -160,7 +161,9 @@ def winding_arrangement(phase : dict,
 
 def bundle_arrangement(winding: dict,   # comes from winding_arrangement
                        bundles_per_half_slot: int,
-                       bundle_label: str = "bundle"
+                       bundle_label: str = "bundle",
+                       background : bool = False,
+                       only_in : str = ".*",
                        ) -> dict:
     """
     Expand slot currents into individual conductor bundles.
@@ -179,6 +182,9 @@ def bundle_arrangement(winding: dict,   # comes from winding_arrangement
 
     bundle_label : str, optional
         Label prefix used to distinguish bundles in the returned keys.
+        
+    background : bool, optional
+        If true, consider each half-slot as a single bundle carrying all the current.
 
     Returns
     -------
@@ -196,11 +202,18 @@ def bundle_arrangement(winding: dict,   # comes from winding_arrangement
 
     bundles = {}
 
-    # Loop over bundle subdivisions
-    for i in range(bundles_per_half_slot):
-
-        # Assign each slot current to all bundles in that slot
+    if background:
+        # Treat each half-slot as a single bundle
         for key in winding.keys():
-            bundles[key + "_" + bundle_label + str(i)] = winding[key]
+            # Assign each slot current to all bundles in that slot
+            bundles[key + ".*"] = winding[key] * bundles_per_half_slot
+    else:
+        # Loop over bundle subdivisions
+        for i in range(bundles_per_half_slot):
 
+            # Assign each slot current to all bundles in that slot
+            for key in winding.keys():
+                bundles[key + "_" + bundle_label + str(i)] = winding[key]
+                
+    bundles = {k:bundles[k] for k in bundles if re.match(only_in, k)}
     return bundles

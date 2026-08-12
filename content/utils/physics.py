@@ -7,6 +7,7 @@ Functions defined here:
 - average_property          (helper)
 - magnetization_halbach     (helper)
 - solve_magnetoharmonic     (main physical solver)
+- dual_trace                (post-processing)
 - electric_field            (post-processing)
 - current_density           (post-processing)
 - joule_losses              (post-processing)
@@ -27,7 +28,7 @@ __copyright__ = "Copyright 2026, CentraleSupélec, SAFRAN"
 __credits__ = ["Théodore Cherrière", "Alexis Pons", "Guillaume Krebs",
                     "Adrien Mercier", "Loucif Benmamas", "Sulivan Küttler"]
 __license__ = "GNU LGPL"
-__version__ = "0.1"
+__version__ = "0.2"
 __maintainer__ = "Théodore Cherrière"
 __email__ = "theodore.cherriere@centralesupelec.fr"
 __status__ = "Development"
@@ -35,7 +36,10 @@ __status__ = "Development"
 #%% Import
 
 import ngsolve as ngs
-from ngsolve.solvers import SuperLU
+import numpy as np
+from time import time
+import scipy.sparse as sp
+
 
 #%% Helpers
 
@@ -164,87 +168,159 @@ def solve_magnetoharmonic(
     reluctivity: ngs.GridFunction | ngs.CoefficientFunction,  # magnetic reluctivity
     magnetization: ngs.GridFunction | ngs.CoefficientFunction,  # complex magnetization
     frequency: float,   # electrical frequency
-    supply: dict,       # supply of electrical conductors
-    conductivity: ngs.GridFunction | ngs.CoefficientFunction | float = 6e7,  # conductivity
+    supply: dict, # supply of electrical conductors
+    conductivity: ngs.GridFunction | ngs.CoefficientFunction | float = 6e7,    # conductivity
     Kinv=None,  # optional precomputed inverse system matrix
     solver: str = "superlu",  # linear solver type
-    bonus_intorder : int = 3,       # bonus intorder for conductivity and magnetizationterms
+    bonus_intorder : int = 3,       # bonus order of integration in the assembly
     verbose: int = 0,  # for controlling print statements
     taskmanager: bool = True, # for paralelizing assembly process
+    # Slot model - mixed boundary conditions
+    # on selected boundary, apply : robin_coeff*a           + (1-robin_coeff)*nu*da/dn
+    #                             = robin_coeff*a_dirichlet + (1-robin_coeff)*Trace(h_neumann)
+    robin_bnd   : str = None, # Boundary name where apply mixed condition
+    robin_coeff : ngs.GridFunction | ngs.CoefficientFunction | float = 0,     # Robin coefficient in [0 = neumann, 1 = dirichlet)
+    a_dirichlet : ngs.GridFunction | ngs.CoefficientFunction | float = 0,     # non-zero Dirichlet, in fes
+    h_tangential   : ngs.GridFunction | ngs.CoefficientFunction | float = 0,  # Neumann trace
+    fix1dof : bool = False,   # if true, fix one dof to a_dirichlet value
     ) -> dict:
     """
-    Solve a magneto-quasistatics problem in the frequency domain.
+    Solve a linear magneto-quasistatic problem in the frequency domain.
 
-    This function assembles and solves a coupled finite-element system for
-    the magnetic vector potential and bundle-wise electric potentials in
-    conducting regions, including eddy-current effects in lectrical conductors
-    and imposed supply currents.
+    This function assembles and solves the finite-element formulation of a
+    time-harmonic magneto-quasistatic problem using the magnetic vector
+    potential. Eddy currents in electrical conductors are modeled through a
+    coupled formulation with Lagrange multipliers enforcing prescribed bundle
+    currents. The solver supports permanent magnet excitation, spatially varying
+    material properties, optional mixed (Robin) boundary conditions, and
+    pre-factorized system matrices for efficient repeated simulations.
 
     Parameters
     ----------
     fes : ngs.FESpace
-        Finite element space for the coupled magneto-harmonic system.
+        Finite element space for the magnetic vector potential.
 
     reluctivity : ngs.GridFunction or ngs.CoefficientFunction
-        Magnetic reluctivity (1/μ), possibly spatially varying.
-        Magnetic materials are assumed linear.
+        Magnetic reluctivity (1/μ). May vary spatially. Magnetic materials are
+        assumed linear.
 
     magnetization : ngs.GridFunction or ngs.CoefficientFunction
-        Complex-valued magnetization source term (e.g., permanent magnets).
+        Complex-valued magnetization source term, typically representing
+        rotating permanent magnets.
 
     frequency : float
         Electrical excitation frequency [Hz].
 
     supply : dict
-        Dictionary mapping conductor bundle names to imposed currents,
-        so that different types of windings can be simulated.
+        Electrical supply of the conducting bundles. Keys correspond to 
+        conductor bundle names and values to the imposed complex currents [A].
 
-    conductivity : ngs.GridFunction or ngs.CoefficientFunction, optional
+    conductivity : float or ngs.GridFunction or ngs.CoefficientFunction, optional
         Electrical conductivity distribution.
 
     Kinv : optional
-        Precomputed inverse of the system matrix to accelerate solves.
+        Precomputed inverse (or factorization) of the system matrix. Providing
+        this argument skips assembly and factorization of the stiffness matrix,
+        greatly accelerating repeated solves with unchanged material properties.
 
     solver : str, optional
-        Direct solver backend used for matrix inversion (default: "pardiso").
+        Direct solver backend used to factorize the system matrix (default:
+        ``"pardiso"``).
 
     bonus_intorder : int, optional
-        Bonus integration order for conductivity terms.
+        Additional integration order used for conductivity and magnetization
+        terms to improve quadrature accuracy.
 
     verbose : int, optional
-        Verbosity level for assembly and solve progress.
+        Verbosity level. Values greater than zero print timing information for
+        each stage of the solve.
 
     taskmanager : bool, optional
-        If True, enables NGSolve TaskManager for parallel assembly.
+        If True, assembles the finite element matrices using NGSolve's
+        ``TaskManager`` for parallel execution.
+
+    robin_bnd : str, optional
+        Name of the boundary where mixed (Robin) boundary conditions are applied.
+        If ``None``, the default natural (Neumann) boundary condition is used.
+
+    robin_coeff : float or ngs.GridFunction or ngs.CoefficientFunction, optional
+        Robin coefficient α satisfying
+
+            α a + (1-α) ν curl(a) x n
+            = α a_dirichlet + (1-α) h_tangential.
+
+        Typical α values are:
+        - 0 : pure Neumann condition
+        - values approaching 1 : approximate Dirichlet condition.
+
+    a_dirichlet : float or ngs.GridFunction or ngs.CoefficientFunction, optional
+        Prescribed magnetic vector potential used in the Robin boundary
+        condition.
+
+    h_tangential : float or ngs.GridFunction or ngs.CoefficientFunction, optional
+        Prescribed tangential magnetic field trace used in the Robin boundary
+        condition.
+
+    fix1dof : bool, optional
+        If True, fixes one degree of freedom of the magnetic vector potential to
+        remove the null space associated with pure Neumann problems.
 
     Returns
     -------
     results : dict
-        Dictionary containing:
-        - "solution": solved fields
-            - "a": magnetic vector potential
-            - "e": bundle electric potentials
-        - "test": test functions used in weak formulation
-        - "bundles": list of conductor bundle identifiers
-        - "info": metadata (FESpace, material parameters, solver info)
+        Dictionary containing
+
+        ``"solution"``
+            Solution fields:
+            - ``"a"``: magnetic vector potential.
+            - ``"e"``: bundle electric potentials.
+
+        ``"test"``
+            Test functions used in the weak formulation.
+
+        ``"bundles"``
+            Names of the conducting bundles.
+
+        ``"info"``
+            Simulation metadata including the finite element space, material
+            properties, excitation, solver information, cached matrix inverse,
+            and execution times.
 
     Notes
     -----
-    - The formulation imposes total current via Lagrange multiplier
-    - If Kinv is provided, the factorization step is skipped which 
-      accelerates the computation a lot (e.g, for different current excitations)
+    - The formulation assumes linear magnetostatics in the frequency domain.
+    - Eddy currents are modeled only inside conducting bundles.
+    - Total bundle currents are imposed using Lagrange multipliers.
+    - Reusing ``Kinv`` is highly recommended for repeated simulations with
+    varying currents or magnetization, as it avoids reassembling and
+    refactorizing the system matrix.
+    - When ``fix1dof=True``, one degree of freedom is constrained to eliminate
+    the singularity associated with pure Neumann boundary conditions.
     """
-
-    jw = 1j * 2 * ngs.pi * frequency
-
+    
     if verbose >= 1:
-        print("Setup function space... ", end="")
-
+        print(f"-- START MAGNETOHARMONIC SOLVER --")
+        print(f"Solver : {solver.lower()}")
+        
+    t0 = time()
+    jw = 1j * 2 * ngs.pi * frequency
+    K = None
+    txtref = f"Matrix decomposition with {solver}... "
+    
+    if verbose >= 1:
+        txt = "Setup function space... "
+        print(txt, *[""]*(len(txtref)-len(txt)), end="")
+        
     # Identify conductor bundles
     bundles = supply.keys()
 
     mesh = fes.mesh
-
+    if fix1dof:
+        dummy = ngs.GridFunction(fes)
+        dummy.Set(1)
+        ind = np.nonzero(dummy.vec.FV().NumPy())[0][0]
+        fes.FreeDofs()[ind] = False
+        
     # Normalize supplied currents by bundle volume
     Jcplx = {
         bundle: supply[bundle] / ngs.Integrate(1, mesh.Materials(bundle))
@@ -258,24 +334,35 @@ def solve_magnetoharmonic(
     # Define trial and test functions
     trials = fes.TrialFunction()
     tests = fes.TestFunction()
-
-    a, a_ = trials[0], tests[0]
+    if type(trials) is list:
+        a, a_ = trials[0], tests[0]
+    else:
+        a, a_ = trials, tests
 
     e = {bundle: trials[i + 1] for i, bundle in enumerate(bundles)}
     e_ = {bundle: tests[i + 1] for i, bundle in enumerate(bundles)}
 
+    t_fes = time() - t0
+    
     if verbose >= 1:
-        print("Done!")
+        print(f"done in {t_fes*1000:.0f} ms")
 
     # ------------------------------------------------------------
     # Assemble system matrix
     # ------------------------------------------------------------
-    if Kinv is None:
-
+    t_assembly = 0
+    t_decomposition = 0
+    if (Kinv is None) or fix1dof:
+        tic = time()
         if verbose >= 1:
-            print("Assemble matrix... ", end="")
+            txt = "Assemble matrix... "
+            print(txt, *[""]*(len(txtref) - len(txt)), end="")
 
         bf = Curl(a_) * reluctivity * Curl(a) * ngs.dx
+        
+        # Optional Robin term
+        if robin_bnd is not None:
+            bf += a_ * robin_coeff / (1-robin_coeff) * a * ngs.ds(robin_bnd)
 
         # Eddy-current + constraint coupling in each bundle
         for bundle in bundles:
@@ -289,64 +376,103 @@ def solve_magnetoharmonic(
         else:
             K = ngs.BilinearForm(bf).Assemble().mat
 
+        t_assembly = time() - tic
+        
         if verbose >= 1:
-            print("Done!")
+            print(f"done in {t_assembly*1000:.0f} ms")
 
+        
         # Factorize system
         if verbose >= 1:
-            print(f"Matrix decomposition with {solver}... ", end="")
-
-        if solver.lower() != "superlu":
-            Kinv = K.Inverse(fes.FreeDofs(), inverse=solver)
-            
-        else:
-            Kinv = SuperLU(K, freedofs=fes.FreeDofs())
-
+            txt = txtref
+            print(txtref, end="")
+    
+        tic = time()
+        if (Kinv is None):
+            if solver.lower() != "superlu":
+                Kinv = K.Inverse(fes.FreeDofs(), inverse=solver)
+            else:
+                rows,cols,vals = K.COO()
+                Ksp =  sp.csc_matrix((vals,(rows,cols)))
+                Ksp = Ksp[fes.FreeDofs(),:][:,fes.FreeDofs()]
+                Kinv = sp.linalg.splu(Ksp)          
+                            
+        t_decomposition = time() - tic
+        
         if verbose >= 1:
-            print("Done!")
+            print(f"done in {t_decomposition*1000:.0f} ms")
 
     # ------------------------------------------------------------
     # Assemble right-hand side
     # ------------------------------------------------------------
     if verbose >= 1:
-        print("Assemble right hand side... ", end="")
-
+        txt = "Assemble right hand side... "
+        print(txt, *[""]*(len(txtref) - len(txt)), end="")
+    tic = time()
     lf = Curl(a_) * magnetization * ngs.dx(bonus_intorder = bonus_intorder)
-
+    
+    # Optional Robin term
+    if robin_bnd is not None:
+        lf += a_ * robin_coeff / (1-robin_coeff) * a_dirichlet * ngs.ds(robin_bnd)
+        lf += a_ * h_tangential * ngs.ds(robin_bnd)
+     
     for bundle in bundles:
         lf += -e_[bundle] * Jcplx[bundle] * ngs.dx(bundle)
-
+        
     F = ngs.LinearForm(lf).Assemble().vec
-
+    t_rhs = time() - tic
     if verbose >= 1:
-        print("Done!")
+        print(f"done in {t_rhs*1000:.0f} ms")
 
     # ------------------------------------------------------------
     # Solve linear system
     # ------------------------------------------------------------
     if verbose >= 1:
-        print("Solve the problem... ", end="")
-
+        txt = "Solve the problem... "
+        print(txt, *[""]*(len(txtref) - len(txt)), end="")
+    tic = time()
     sol = ngs.GridFunction(fes)
-    sol.vec.data += Kinv * F
+    res = sol.vec.CreateVector()
+    if fix1dof:
+        sol.vec.data[ind] = a_dirichlet.vec[ind]
+        res.data = K*sol.vec - F
+    else:
+        res.data =  -F
+
+    if type(Kinv) != sp.linalg.SuperLU:
+        sol.vec.data -= Kinv * res
+    else:
+        spsol = Kinv.solve(res.FV().NumPy()[fes.FreeDofs()])
+        sol.vec.data.FV().NumPy()[fes.FreeDofs()] = - spsol
+    
+    t_solve = time() - tic
 
     if verbose >= 1:
-        print("Done!")
+        print(f"done in {t_solve*1000:.0f} ms")
 
     # ------------------------------------------------------------
     # Package results
     # ------------------------------------------------------------
     if verbose >= 1:
-        print("Pack the results... ", end="")
+        txt = "Pack the results... "
+        print(txt, *[""]*(len(txtref) - len(txt)), end="")
 
+    time_total = time() -t0
+    if type(trials) is list:
+        solution = {
+                "a": sol.components[0],
+                "e": {
+                    bundle: sol.components[i + 1]
+                    for i, bundle in enumerate(bundles)
+                }
+                }
+    else:
+        solution = {
+                "a": sol,
+                "e": {}}
     results = {
-        "solution": {
-            "a": sol.components[0],
-            "e": {
-                bundle: sol.components[i + 1]
-                for i, bundle in enumerate(bundles)
-            },
-        },
+        "solution": solution,
+        "trial": {"a": a, "e": e},
         "test": {"a": a_, "e": e_},
         "bundles": bundles,
         "info": {
@@ -357,16 +483,80 @@ def solve_magnetoharmonic(
             "supply": supply,
             "conductivity": conductivity,
             "Kinv": Kinv,
+            "K" : K,
+            "F": -res,
             "solver": solver,
-        },
-    }
+            "walltime" : {"fes": t_fes, 
+                          "assembly": t_assembly, 
+                          "decomposition": t_decomposition, 
+                          "rhs": t_rhs, 
+                          "solve": t_solve,
+                          "total":time_total}
+            },
+        }  
 
     if verbose >= 1:
-        print("Done!")
-
+        print(f"total time: {time_total:.3f} s")
+        print(f"-- END MAGNETOHARMONIC SOLVER --")
+       
     return results
+    
 
 #%% Post-processing
+
+
+def dual_trace(
+    fes: ngs.FESpace,  # finite element space; should have dirichlet = bnd
+    bnd: str,          # boundary name where to compute the dual trace
+    nu: ngs.GridFunction | ngs.CoefficientFunction, # reluctivity
+    a_ref: ngs.GridFunction | ngs.CoefficientFunction # reference magnetic vector potential
+    ) -> ngs.GridFunction:
+    """
+    Compute the tangential magnetic field on a boundary by dual projection.
+
+    This function projects the tangential magnetic field
+    ``h = nu * Curl(a_ref)`` onto the specified boundary using an L²
+    projection. The resulting grid function can be used, for example, as
+    Neumann boundary data in another magnetostatic or magneto-harmonic
+    simulation.
+
+    Parameters
+    ----------
+    fes : ngs.FESpace
+        H¹ finite element space with Dirichlet boundary conditions defined
+        on the boundary where the trace is computed.
+
+    bnd : str
+        Name of the boundary where the tangential trace is evaluated.
+
+    nu : ngs.GridFunction or ngs.CoefficientFunction
+        Magnetic reluctivity.
+
+    a_ref : ngs.GridFunction or ngs.CoefficientFunction
+        Reference magnetic vector potential.
+
+    Returns
+    -------
+    ngs.GridFunction
+        Boundary projection of the tangential magnetic field.
+    """
+    h, h_ = fes.TnT()
+
+    # Boundary mass matrix
+    K = ngs.BilinearForm(h_ * h * ngs.ds(bnd)).Assemble().mat
+
+    # Reference magnetic field
+    h_ref = nu * Curl(a_ref)
+
+    # Right-hand side corresponding to the dual trace
+    f = ngs.LinearForm(Curl(h_) * h_ref * ngs.dx).Assemble().vec
+
+    # Solve the boundary projection problem
+    ht = ngs.GridFunction(fes)
+    ht.vec.data = K.Inverse(freedofs=~fes.FreeDofs()) * f
+
+    return ht
+    
 
 def electric_field(results: dict,              # result of solve_magnetoharmonic
                    type: str = "solution"      # "solution" or "test" for directional derivative
