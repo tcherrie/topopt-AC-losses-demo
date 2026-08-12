@@ -257,7 +257,7 @@ def taylor_test(F:      callable,
                dF:      callable, 
                x0:      ngs.GridFunction, 
                pert:    ngs.GridFunction    = None, 
-               H:       list|np.ndarray   = np.logspace(-9,1,20)
+               H:       list|np.ndarray   = np.logspace(-9,1,10)
                ) -> tuple:
     """
     Perform a Taylor test to verify correctness of a functional gradient.

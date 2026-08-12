@@ -1,32 +1,31 @@
-# JupyterLite Demo
+# Topopt-AC-losses (demo)
+
+[![GitHub license](https://img.shields.io/github/license/tcherrie/topopt-AC-losses-demo)](https://github.com/tcherrie/topopt-AC-losses-demo) [![GitHub stars](https://img.shields.io/github/stars/tcherrie/topopt-AC-losses-demo)](https://github.com/tcherrie/topopt-AC-losses-demo/stargazers) [![lite-badge](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://tcherrie.github.io/topopt-AC-losses-demo/lab/?path=0_index.ipynb)
+
+
+Parametric and topology optimization of armature conductors' in electrical machines to minimize AC losses.
+
+![Optimization of conductors](cover.png)
+
+## 1) Quickstart
+
+Click here to access and execute the notebooks in your browser:
 
 [![lite-badge](https://jupyterlite.rtfd.io/en/latest/_static/badge.svg)](https://tcherrie.github.io/topopt-AC-losses-demo/lab/?path=0_index.ipynb)
 
-JupyterLite deployed as a static site to GitHub Pages, for demo purposes.
+## 2) Reference
 
-## ✨ Try it in your browser ✨
+This repository is for demo purposes and may not be up to date.
+See [this repository](https://github.com/tcherrie/topopt-AC-losses) to access latest and previous versions.
 
-➡️ **https://tcherrie.github.io/topopt-AC-losses-demo/lab/?path=0_index.ipynb**
+This repository makes use of [JupyterLite](https://github.com/jupyterlite) and [NGSolve](https://ngsolve.org/). Many thanks to their developers!
 
-## Setting up your own NGSolve - jupyterlite demos:
+## 3) License
 
-1. Sign in to your github account
-   
-3. Click on 'Use this template' to create your new, public repository
-   
-4. Enable 'github-pages from actions':
+Copyright (C) Théodore CHERRIERE (theodore.cherriere@centralesupelec.fr)
 
-   Settings -> Pages -> Source: 'github actions'
+This code is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-5. Click on 'Actions', and allow workflow actions (maybe not necessary ?)
+This code is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License for more details.
 
-6. Fill the 'contents' folder with your notebooks
-
-7. Adjust links to your github pages website
-
-## Further Information and Updates
-
-For more info, keep an eye on the JupyterLite documentation:
-
-- How-to Guides: https://jupyterlite.readthedocs.io/en/latest/howto/index.html
-- Reference: https://jupyterlite.readthedocs.io/en/latest/reference/index.html
+You should have received a copy of the GNU Lesser General Public License and of the GNU General Public License along with this code. If not, see <http://www.gnu.org/licenses/>. Please read their terms carefully and use this copy of the code only if you accept them.
