@@ -33,8 +33,6 @@ __status__ = "Development"
 
 #%% Import
 
-from tabnanny import verbose
-
 import scipy.sparse as sp
 from time import time
 
@@ -588,7 +586,7 @@ def partiald_joule_losses(results :     dict,
         # Electric field from primal solution
         E = -electric_field(results)
 
-        # Air-domain adjoint component
+        # Magnetic adjoint component
         pa = adjoint["solution"]["a"]
 
         # Contribution from conductor bundles

@@ -3,6 +3,8 @@
 Provide utilities related to linear algebra
 
 Functions defined here:
+- L2norm
+- H1norm
 - sparse
 - vec
 - split_mat
@@ -29,13 +31,38 @@ __status__ = "Development"
 
 #%% Import
 
-from scipy.sparse import csc_matrix
+from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
+import ngsolve as ngs
+from utils.physics_symmetric import integrate
 
 #%% Vector and matrices
 
+def L2norm(field,
+           state,
+           zone : str = ".*"):
+    """ Compute L2 norm """
+    return ngs.sqrt(integrate(ngs.Norm(field)**2, state, zone))
+
+
+def H1norm(field,
+           state,
+           gradfield : callable = None,
+           zone : str = ".*"):
+    """ Compute H1 norm """
+    if gradfield is None:
+        expr = ngs.Norm(field)**2 + ngs.Norm(ngs.grad(field))**2
+    else:
+        expr = ngs.Norm(field)**2 + ngs.Norm(gradfield)**2
+    return ngs.sqrt(ngs.integrate(expr, state, zone))
+    
 def sparse(bf, freedofs_rows = None, freedofs_cols=None):
+
+def sparse(bf, 
+           freedofs_rows = None, 
+           freedofs_cols =None,
+           type : str = "coo"):
     """
-    Convert a bilinear form into a sparse CSC matrix, optionally restricting
+    Convert a bilinear form into a sparse matrix, optionally restricting
     it to selected rows and columns.
 
     Parameters
@@ -47,6 +74,8 @@ def sparse(bf, freedofs_rows = None, freedofs_cols=None):
         Row indices to retain. If ``None``, all rows are retained.
     freedofs_cols : array-like, optional
         Column indices to retain. If ``None``, all columns are retained.
+    type : str, optional
+        Type of sparse matrix (``csc``, ``csr``, ``coo``). Default is ``coo``.
 
     Returns
     -------
@@ -55,7 +84,12 @@ def sparse(bf, freedofs_rows = None, freedofs_cols=None):
         optionally restricted to the specified rows and columns.
     """
     r,c,vals  = bf.COO()
-    K = csc_matrix((vals,(r,c)))
+    if type.lower() == "csc":
+        K = csc_matrix((vals,(r,c)))
+    elif type.lower() == "csr":
+        K = csr_matrix((vals,(r,c)))
+    elif type.lower() == "coo":
+        K = coo_matrix((vals,(r,c)))
     if freedofs_rows is not None:
         K = K[freedofs_rows,:]
     if freedofs_cols is not None:
@@ -92,6 +126,7 @@ def vec(lf, freedofs = None):
 def split_mat(K,
                freedofs,
                excluded_dofs = None,
+               type : str = "coo"
                )-> tuple:
     """
     Split a matrix into submatrices corresponding to free and excluded
@@ -123,7 +158,7 @@ def split_mat(K,
     if excluded_dofs is None:
         excluded_dofs = ~freedofs
         
-    K = sparse(K)
+    K = sparse(K, type = type)
     A = K[freedofs,:][:,freedofs]
     B = K[freedofs,:][:,excluded_dofs]
     C = K[excluded_dofs,:][:,freedofs]

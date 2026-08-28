@@ -3,10 +3,11 @@
 Provide utilities related to the physical formulation and associated solvers.
 
 Functions defined here:
+- surface                   (helper)
 - Curl                      (helper)
 - average_property          (helper)
 - magnetization_halbach     (helper)
-- solve_magnetoharmonic     (main physical solver)
+- solve_magnetoharmonic     (main physical solvers)
 - dual_trace                (post-processing)
 - electric_field            (post-processing)
 - current_density           (post-processing)
@@ -39,7 +40,7 @@ import ngsolve as ngs
 import numpy as np
 from time import time
 import scipy.sparse as sp
-
+from copy import copy
 
 #%% Helpers
 
@@ -73,10 +74,39 @@ def Curl(u: ngs.GridFunction | ngs.CoefficientFunction
     """
     return ngs.CF(((0, 1), (-1, 0)), dims=(2, 2)) * ngs.grad(u)
 
+def surface(zone: str,
+            mesh: ngs.comp.Mesh
+            ) -> float:
+    """
+    Compute the surface measure of a specified mesh region.
+
+    Parameters
+    ----------
+
+    zone : str
+        Name of the material region whose surface measure is to be computed.
+        The region is selected using ``mesh.Materials(zone)``.
+    
+    mesh : ngs.comp.Mesh
+            NGSolve computational mesh on which the surface is evaluated.
+
+    Returns
+    -------
+    float
+        Surface measure of the specified region, computed by integrating the
+        constant function ``1`` over the selected mesh region.
+
+    Notes
+    -----
+    The integration order is set to the curve order of the mesh using
+    ``mesh.GetCurveOrder()``.
+    """
+    return ngs.Integrate(1, mesh.Materials(zone), order = mesh.GetCurveOrder())
 
 def average_property(property: ngs.GridFunction | ngs.CoefficientFunction,
                      results: dict,
-                     zone: str = ".*"
+                     zone: str = ".*",
+                     order_min = 5,
                      ) -> float:
     """
     Compute the spatial average of a field over a given mesh region.
@@ -110,11 +140,11 @@ def average_property(property: ngs.GridFunction | ngs.CoefficientFunction,
 
     mesh = results["info"]["fes"].mesh
 
-    # Compute total area/volume of the selected region
-    surface_zone = ngs.Integrate(1, mesh.Materials(zone))
-
     # Compute integral of the field over the region and normalize
-    return ngs.Integrate(property, mesh.Materials(zone)) / surface_zone
+    try: order = max([mesh.GetCurveOrder(), results["info"]["fes"].components[0].globalorder + 1 , order_min])
+    except: order = max([mesh.GetCurveOrder(), results["info"]["fes"].globalorder + 1 , order_min])
+    
+    return ngs.Integrate(property, mesh.Materials(zone), order = order) / surface(zone, mesh)
 
 
 
@@ -161,7 +191,7 @@ def magnetization_halbach(br: float = 1,
                              ngs.exp(-1j * ((p - 1) * alpha + ngs.pi / 2)) )
     )
 
-#%% Main physical solver
+#%% Main physical solvers
 
 def solve_magnetoharmonic(
     fes: ngs.FESpace,  # finite element space
@@ -225,7 +255,7 @@ def solve_magnetoharmonic(
 
     solver : str, optional
         Direct solver backend used to factorize the system matrix (default:
-        ``"pardiso"``).
+        ``"superlu"``).
 
     bonus_intorder : int, optional
         Additional integration order used for conductivity and magnetization
@@ -323,7 +353,7 @@ def solve_magnetoharmonic(
         
     # Normalize supplied currents by bundle volume
     Jcplx = {
-        bundle: supply[bundle] / ngs.Integrate(1, mesh.Materials(bundle))
+        bundle: supply[bundle] / surface(bundle, mesh)
         for bundle in bundles
     }
 
@@ -477,15 +507,23 @@ def solve_magnetoharmonic(
         "bundles": bundles,
         "info": {
             "fes": fes,
-            "reluctivity": reluctivity,
-            "magnetization": magnetization,
-            "frequency": frequency,
-            "supply": supply,
-            "conductivity": conductivity,
+            "reluctivity" : reluctivity,
+            "magnetization" : magnetization,
+            "frequency" : frequency,
+            "supply" : supply,
+            "conductivity" : conductivity,
             "Kinv": Kinv,
             "K" : K,
-            "F": -res,
+            "F" : -res,
             "solver": solver,
+            "bonus_intorder" : bonus_intorder,
+            "verbose" : verbose, 
+            "taskmanager" : taskmanager,
+            "robin_bnd" : robin_bnd, 
+            "robin_coeff" :robin_coeff, 
+            "a_dirichlet" : a_dirichlet,
+            "h_tangential" : h_tangential,
+            "fix1dof" : fix1dof,
             "walltime" : {"fes": t_fes, 
                           "assembly": t_assembly, 
                           "decomposition": t_decomposition, 
@@ -505,12 +543,11 @@ def solve_magnetoharmonic(
 #%% Post-processing
 
 
-def dual_trace(
-    fes: ngs.FESpace,  # finite element space; should have dirichlet = bnd
-    bnd: str,          # boundary name where to compute the dual trace
-    nu: ngs.GridFunction | ngs.CoefficientFunction, # reluctivity
-    a_ref: ngs.GridFunction | ngs.CoefficientFunction # reference magnetic vector potential
-    ) -> ngs.GridFunction:
+def dual_trace(fes: ngs.FESpace,  # finite element space; should have dirichlet = bnd
+               bnd: str,          # boundary name where to compute the dual trace
+               nu: ngs.GridFunction | ngs.CoefficientFunction, # reluctivity
+               a_ref: ngs.GridFunction | ngs.CoefficientFunction # reference magnetic vector potential
+               ) -> ngs.GridFunction:
     """
     Compute the tangential magnetic field on a boundary by dual projection.
 
@@ -762,7 +799,7 @@ def average_torque(results : dict,
     mesh = results["info"]["fes"].mesh
 
     # Airgap normalization area
-    S = ngs.Integrate(1, mesh.Materials(airgap))
+    S = surface(airgap, mesh)
 
     # Magnetic flux density
     b = Curl(results["solution"]["a"])

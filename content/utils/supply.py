@@ -32,8 +32,8 @@ import re
 
 #%% Current feeding
 
-def phase_current(I_rms : float,
-                  load_angle : float=0,
+def phase_current(I_rms : float,        # A
+                  load_angle : float=0, # rad
                   Ap : str = "Ap",
                   Am : str = "Am",
                   Bp : str = "Bp",
