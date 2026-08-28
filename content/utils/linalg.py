@@ -13,7 +13,7 @@ Functions defined here:
 
 A Large Language Model (GPT-5.5 from Open AI, free version) was used to help with the code and generate
 the docstrings of the functions. The authors have written the initial code, carefully checked and post-edited
-the content of this file, and take full responsability of its content.
+the content of this file, and take full responsibility of its content.
 This software is provided "as is" without warranty of any kind, and can be used, shared ad modified under the terms of GNU LGPL license.
 """
 
@@ -33,7 +33,7 @@ __status__ = "Development"
 
 from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
 import ngsolve as ngs
-from utils.physics_symmetric import integrate
+from utils.physics import integrate
 
 #%% Vector and matrices
 
@@ -55,8 +55,7 @@ def H1norm(field,
         expr = ngs.Norm(field)**2 + ngs.Norm(gradfield)**2
     return ngs.sqrt(ngs.integrate(expr, state, zone))
     
-def sparse(bf, freedofs_rows = None, freedofs_cols=None):
-
+    
 def sparse(bf, 
            freedofs_rows = None, 
            freedofs_cols =None,

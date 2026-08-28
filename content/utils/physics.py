@@ -3,8 +3,9 @@
 Provide utilities related to the physical formulation and associated solvers.
 
 Functions defined here:
-- surface                   (helper)
 - Curl                      (helper)
+- surface                   (helper)
+- integrate                 (helper)
 - average_property          (helper)
 - magnetization_halbach     (helper)
 - solve_magnetoharmonic     (main physical solvers)
@@ -18,7 +19,7 @@ Functions defined here:
 
 A Large Language Model (GPT-5.5 from Open AI, free version) was used to help with the code and generate
 the docstrings of the functions. The authors have written the initial code, carefully checked and post-edited
-the content of this file, and take full responsability of its content.
+the content of this file, and take full responsibility of its content.
 This software is provided "as is" without warranty of any kind, and can be used, shared ad modified under the terms of GNU LGPL license.
 """
 
@@ -103,6 +104,44 @@ def surface(zone: str,
     """
     return ngs.Integrate(1, mesh.Materials(zone), order = mesh.GetCurveOrder())
 
+def integrate(property: ngs.GridFunction | ngs.CoefficientFunction,
+              results: dict,
+              zone: str = ".*",
+              order_min = 5,
+              ) -> float:
+    """
+    Compute the integral of a field over a given mesh region.
+
+    Parameters
+    ----------
+    property : ngs.GridFunction or ngs.CoefficientFunction
+        Field to be averaged over the domain.
+
+    results : dict
+        Simulation results dictionary containing at least the FESpace
+        and mesh information under `results["info"]["fes"]`.
+
+    zone : str, optional
+        Material or region selector (regex-style). Default is ".*" (whole domain).
+
+    Returns
+    -------
+    float
+        Spatial average of the given property over the selected zone.
+
+    Notes
+    -----
+    - The integration is performed using NGSolve integration utilities.
+    """
+
+    mesh = results["info"]["fes"].mesh
+
+    # Compute integral of the field over the region and normalize
+    try: order = max([mesh.GetCurveOrder(), 2*results["info"]["fes"].components[0].globalorder + 1 , order_min])
+    except: order = max([mesh.GetCurveOrder(), 2*results["info"]["fes"].globalorder + 1 , order_min])
+    
+    return ngs.Integrate(property, mesh.Materials(zone), order = order)
+
 def average_property(property: ngs.GridFunction | ngs.CoefficientFunction,
                      results: dict,
                      zone: str = ".*",
@@ -139,14 +178,7 @@ def average_property(property: ngs.GridFunction | ngs.CoefficientFunction,
     """
 
     mesh = results["info"]["fes"].mesh
-
-    # Compute integral of the field over the region and normalize
-    try: order = max([mesh.GetCurveOrder(), results["info"]["fes"].components[0].globalorder + 1 , order_min])
-    except: order = max([mesh.GetCurveOrder(), results["info"]["fes"].globalorder + 1 , order_min])
-    
-    return ngs.Integrate(property, mesh.Materials(zone), order = order) / surface(zone, mesh)
-
-
+    return integrate(property, results, zone, order_min) / surface(zone, mesh)
 
 def magnetization_halbach(br: float = 1,
                           mu: float = 4e-7 * ngs.pi,
